@@ -1,0 +1,142 @@
+---
+title: "Machine Learning Project"
+author: "BChen"
+date: "15 August, 2014"
+output: html_document
+---
+```{r setoptions,echo=FALSE}
+library(knitr)
+opts_chunk$set(cache=TRUE,message=FALSE)
+```
+
+#Download Data, Cleaning up and Partitionning into Train Test and Validation
+
+```{r downloading}
+# We download the files from the websites.
+
+# fileurl<-"https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+# download.file(fileurl,destfile="training.csv",method="curl")
+# fileurl2<-"https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+# download.file(fileurl2,destfile="testing.csv",method="curl")
+
+```
+
+```{r cleaning}
+#Let's load the data and do some first clean up
+
+training<-read.csv("training.csv",header=TRUE,na.strings=c("NA","","#DIV/0!"))
+testing<-read.csv("testing.csv",header=TRUE,na.strings=c("NA","","#DIV/0!"))
+
+#Find all column with excessive NA (>=19000)
+
+count<-apply(training,2,function(x) sum(is.na(x)))
+
+ind<-count>=19000
+
+training<-training[,!ind]
+testing<-testing[,!ind]
+
+#Removing all the first columns that contains subject ID, time and window not relevant to prediction
+training<-training[,8:60]
+testing<-testing[,8:60]
+
+#Partition the training data into 3 sets for training,testing and cross validation
+library(caret)
+inBuild<-createDataPartition(y=training$class,p=0.8,list=FALSE)
+build<-training[inBuild,]
+test<-training[-inBuild,]
+inTrain<-createDataPartition(y=build$classe,p=0.8,list=FALSE)
+train<-build[inTrain,]
+validation<-build[-inTrain,]
+
+#Let's take a quick look at dimensions
+dim(train);dim(validation);dim(test)
+```
+
+
+#Train 3 different Models
+
+Since our end goal is to predict the classe as best as we can, we did not reduce the number of features to accelerate model fitting. If we were to perform a PCA on the features we could have reduce the features number by half and preserve 95% of the variance. But our main constraint is predictive capacity not ease of use or speed.
+
+##Random Forest
+
+```{r training randomForest}
+set.seed(12345)
+modRF<-train(classe~.,method="rf",data=train)
+```
+
+##GBM
+
+```{r training Gradient Boosting Model,message=FALSE,results='hide'}
+set.seed(12345)
+modGBM<-train(classe~.,method="gbm",data=train)
+```
+
+##SVM
+
+```{r training Support Vector Machine,message=FALSE,results='hide'}
+modSVM<-train(classe~.,method="svmRadialCost", data=train)
+```
+
+Let's check out the accuracies of our models on the validation set. This is a way for us to check the out of sample error of our three models to get an estimate on how they will perform on a dataset they have not been trained on.
+
+```{r check accuracy}
+valRF<-predict(modRF,validation)
+valGBM<-predict(modGBM,validation)
+valSVM<-predict(modSVM,validation)
+accRF<-postResample(valRF,validation$classe)
+accGBM<-postResample(valGBM,validation$classe)
+accSVM<-postResample(valSVM,validation$classe)
+acc<-data.frame(RF=accRF,GBM=accGBM,SVM=accSVM)
+acc
+```
+
+#Stack the three models to improve accuracy
+
+We are going to use RandomForest to stack the 3 models in the validation set.
+
+```{r stacking}
+valS<-data.frame(RF=valRF,GBM=valGBM,SVM=valSVM,classe=validation$classe)
+modSTACKED<-train(classe~.,method="rf",data=valS)
+valSTACKED<-predict(modSTACKED,valS)
+postResample(valSTACKED,validation$classe)
+```
+
+Because we have stacked the 3 models in the validation set we will need to use the test set to get a sense on what the out of sample error is. 
+
+#Estimated out of sample error
+
+Let's run our stacked model on the test set to get an estimate of our out of sample error.
+
+```{r out of sample error}
+testRF<-predict(modRF,test)
+testGBM<-predict(modGBM,test)
+testSVM<-predict(modSVM,test)
+testS<-data.frame(RF=testRF,GBM=testGBM,SVM=testSVM,classe=test$classe)
+testSTACKED<-predict(modSTACKED,testS)
+postResample(testSTACKED,test$classe)
+```
+
+So it looks like our out of sample error should be less than 1%. The ensemble method here yield meager benefits. It is mainly because the Random Forest is already performing so strongly.
+
+#Predict the 20 cases
+
+```{r final prediction}
+restRF<-predict(modRF,testing)
+restGBM<-predict(modGBM,testing)
+restSVM<-predict(modSVM,testing)
+restS<-data.frame(RF=restRF,GBM=restGBM,SVM=restSVM,classe=testing$problem_id)
+#The answers are
+answers<-predict(modSTACKED,restS)
+
+pml_write_files <- function(x){
+  n <- length(x)
+  for(i in 1:n){
+    filename <- paste0("problem_id_",i,".txt")
+    write.table(x[i],file=filename,quote=FALSE,row.names=FALSE,col.names=FALSE)
+  }
+}
+
+pml_write_files(answers)
+answers
+```
